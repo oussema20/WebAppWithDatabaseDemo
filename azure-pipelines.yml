@@ -1,48 +1,103 @@
 trigger: 'none' # will disable CI builds entirely
-
-pool:
-  vmImage: 'windows-2019'
-    
-variables:
-  BuildConfiguration: release
+jobs:
+- job: WebApp
+  displayName: 'Build Web App'
+  pool:
+    vmImage: 'windows-2019'
+      
+  variables:
+    BuildConfiguration: release
   
-steps:
+  steps:
 
-- task: UseDotNet@2
-  displayName: Install .NET 6 sdk
-  inputs:
-    packageType: sdk
-    version: 6.0.x
-    installationPath: $(Agent.ToolsDirectory)/dotnet
+  - task: UseDotNet@2
+    displayName: Install .NET 6 sdk
+    inputs:
+      packageType: sdk
+      version: 6.0.x
+      installationPath: $(Agent.ToolsDirectory)/dotnet
+  - task: DotNetCoreCLI@2
+    displayName: Restore Nuget Packages
+    inputs:
+      command: restore
+      projects: '**/WebApp.csproj'
+  - task: SonarCloudPrepare@1
+    displayName: 'Prepare analysis on SonarCloud'
+    inputs:
+      SonarCloud: 'YamlCompleteAppSonarServiceConnection'
+      organization: 'orgobenamor'
+      scannerMode: 'MSBuild'
+      projectKey: 'OrgObenAmor_YamlPipelineCompleteApp'
+      projectName: 'YamlPipelineCompleteApp'
+  - task: DotNetCoreCLI@2
+    displayName: Build Web App
+    inputs:
+      projects: '**/WebApp.csproj'
+      arguments: '--configuration $(BuildConfiguration)'
+  - task: DotNetCoreCLI@2
+    displayName: Run Unit Tests
+    inputs:
+      command: test
+      projects: '**/*UnitTest*.csproj'
+      arguments: '--configuration $(BuildConfiguration)'
+  - task: DotNetCoreCLI@2
+    displayName: Create Web App Package (.zip)
+    inputs:
+      command: publish
+      publishWebProjects: True
+      arguments: '--configuration $(BuildConfiguration) --output $(build.artifactstagingdirectory)'
+      zipAfterPublish: True
+  - task: SonarCloudAnalyze@1
+    displayName: 'Run Code Analysis'
+  - task: SonarCloudPublish@1
+    displayName: 'Publish Quality Gate Result'
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Artifact (WebApp.zip)'
+    inputs:
+      PathtoPublish: '$(build.artifactstagingdirectory)'
 
-- task: DotNetCoreCLI@2
-  displayName: Restore Nuget Packages
-  inputs:
-    command: restore
-    projects: '**/WebApp.csproj'
+- job: Database
+  displayName: 'Build the database'
+  pool:
+    vmImage: 'windows-2019'
+  steps:
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Artifact (Dacpac)'
+    inputs:
+      ArtifactName: dacpac
+    
+- job: Selenium
+  displayName: 'Build UI Tests'
+  pool:
+    vmImage: 'windows-2019'
 
-- task: DotNetCoreCLI@2
-  displayName: Build Web App
-  inputs:
-    projects: '**/WebApp.csproj'
-    arguments: '--configuration $(BuildConfiguration)'
+  steps:
+  - task: NuGetToolInstaller@0
+    displayName: 'Use NuGet 4.3.0'
 
-- task: DotNetCoreCLI@2
-  displayName: Run Unit Tests
-  inputs:
-    command: test
-    projects: '**/*UnitTest*.csproj'
-    arguments: '--configuration $(BuildConfiguration)'
+  - task: NuGetCommand@2
+    displayName: 'NuGet restore'
+    inputs:
+      restoreSolution: WebAppWithDatabase.sln
 
-- task: DotNetCoreCLI@2
-  displayName: Create Web App Package (.zip)
-  inputs:
-    command: publish
-    publishWebProjects: True
-    arguments: '--configuration $(BuildConfiguration) --output $(build.artifactstagingdirectory)'
-    zipAfterPublish: True
+  - task: MSBuild@1
+    displayName: 'Build project SeleniumUiTests.csproj'
+    inputs:
+      solution: SeleniumUiTests/SeleniumUiTests.csproj
+      msbuildArguments: '/p:OutDir=$(Build.ArtifactStagingDirectory)'
 
-- task: PublishBuildArtifacts@1
-  displayName: 'Publish Artifact (WebApp.zip)'
-  inputs:
-    PathtoPublish: '$(build.artifactstagingdirectory)'
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Artifact: UI-Test'
+    inputs:
+      ArtifactName: 'UI-Test'
+
+- job: Infrastructure
+  displayName: 'Copy Infrastructure files (ARM)'
+  pool:
+    vmImage: 'ubuntu-latest'
+  steps:
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Artifact: ARM templates'
+    inputs:
+      PathtoPublish: AzureResourceGroupDeployment
+      ArtifactName: arm
